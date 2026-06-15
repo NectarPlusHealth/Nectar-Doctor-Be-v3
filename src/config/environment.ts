@@ -36,6 +36,11 @@ export const config = {
   /** Patient chat extension price in INR (rupees). */
   chatExtensionAmountInr: toNumber(process.env.CHAT_EXTENSION_AMOUNT_INR, 99),
 
+  /** Firebase / FCM */
+  firebaseServiceAccountPath: process.env.FIREBASE_SERVICE_ACCOUNT_PATH || '',
+  /** Shared secret for internal API calls from Admin Backend → this backend */
+  internalApiKey: process.env.INTERNAL_API_KEY || '',
+
   /** Google OAuth (per-doctor) for creating Google Meet links via Calendar API. */
   google: {
     clientId: process.env.GOOGLE_OAUTH_CLIENT_ID || '',

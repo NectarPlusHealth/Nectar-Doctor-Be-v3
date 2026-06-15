@@ -313,4 +313,47 @@ export const logout = async (req: Request, res: Response): Promise<void> => {
     return;
   }
 };
-export default { login,logout };
+
+/**
+ * PATCH /api/v1/registration/device-token
+ * Updates or sets the device token on the user's active session.
+ * Called by the Flutter app after login or when the FCM token is refreshed.
+ * Body: { deviceToken: string, deviceType?: string }
+ */
+export const updateDeviceToken = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userFromReq = (req as any).data;
+    if (!userFromReq?.userId) {
+      response.error({ message: 'Unauthorized' }, res, httpStatus.UNAUTHORIZED);
+      return;
+    }
+
+    const { deviceToken, deviceType } = req.body;
+    if (!deviceToken || typeof deviceToken !== 'string' || deviceToken.trim() === '') {
+      response.error({ message: 'deviceToken is required' }, res, 400);
+      return;
+    }
+
+    const updateFields: any = { deviceToken: deviceToken.trim() };
+    if (deviceType) updateFields.deviceType = String(deviceType);
+
+    // Update the most recent active session for this user
+    const updated = await Session.findOneAndUpdate(
+      { userId: userFromReq.userId, isDeleted: false },
+      { $set: updateFields },
+      { sort: { createdAt: -1 }, new: true }
+    ).lean();
+
+    if (!updated) {
+      response.error({ message: 'No active session found' }, res, 404);
+      return;
+    }
+
+    response.success({ message: 'Device token updated' }, res);
+  } catch (err) {
+    console.error('[auth] updateDeviceToken error:', err);
+    response.error({ msgCode: 'INTERNAL_SERVER_ERROR' }, res, httpStatus.INTERNAL_SERVER_ERROR);
+  }
+};
+
+export default { login, logout, updateDeviceToken };

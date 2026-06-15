@@ -669,10 +669,18 @@ const calenderList = async (
       // Project final structure
       {
         $project: {
+          _id: 1,
           date: 1,
           reason: { $ifNull: [`$reason`, constants.NA] },
           status: { $ifNull: [`$status`, constants.NA] },
           fullName: { $ifNull: [`$fullName`, constants.NA] },
+          consultationType: 1,
+          /** Google Meet link – used by frontends to open the video call. */
+          videoMeetingUrl: { $ifNull: ["$videoMeetingUrl", null] },
+          /** Doctor's registered email – frontends append as ?authuser= */
+          doctorEmail: { $ifNull: ["$doctorTableDetails.email", null] },
+          /** Patient's registered email – patient-side frontends append as ?authuser= */
+          patientEmail: { $ifNull: ["$patientDetails.email", null] },
           doctorDetails: {
             fullName: "$doctorDetails.fullName",
             phone: "$doctorDetails.phone",
@@ -680,10 +688,10 @@ const calenderList = async (
           patientDetails: {
             fullName: "$patientDetails.fullName",
             phone: "$patientDetails.phone",
+            email: "$patientDetails.email",
             isVerified: "$patientData.isVerified",
             profilePic: "$patientData.profilePic",
           },
-          consultationType: 1,
         },
       },
 

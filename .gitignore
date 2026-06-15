@@ -22,3 +22,6 @@ dist-ssr
 .env
 .env.*
 config.env
+
+# Firebase service account (contains private key — NEVER commit)
+firebase-service-account.json

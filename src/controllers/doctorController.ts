@@ -28,6 +28,7 @@ import doctorService from "../services/doctorService";
 import response from "../utils/response";
 import httpStatus from "http-status";
 import constants from "../utils/constant";
+import { sendByUserQuery } from "../services/fcmService";
 import { getPagination } from "../utils/pagination";
 import { resolveOrder } from "../utils/sort";
 import patientService from "../services/patientservice";
@@ -905,6 +906,16 @@ export const doctorAddEstablishment2 = async (req: Request, res: Response): Prom
             title: constants.MESSAGES.DOCTOR_SIGN_UP_PROOFS.TITLE,
             body: constants.MESSAGES.DOCTOR_SIGN_UP_PROOFS.BODY,
           });
+          // Push notification to admin users
+          const adminIds = superadminArray.map((id: any) => String(id));
+          sendByUserQuery(
+            {
+              title: constants.MESSAGES.DOCTOR_SIGN_UP_PROOFS.TITLE,
+              body: constants.MESSAGES.DOCTOR_SIGN_UP_PROOFS.BODY,
+              data: { type: 'DOCTOR_SIGN_UP_PROOFS', doctorId: String(userId) },
+            },
+            { userIds: adminIds }
+          ).catch((e) => console.error('[FCM] DOCTOR_SIGN_UP_PROOFS push failed:', e?.message));
         }
       }
 
@@ -1662,9 +1673,14 @@ export const doctorAddEstablishment = async (req: Request, res: Response): Promi
         // -------------------------
         // 2. Video uniqueness validation check
         // -------------------------
-        const isNewEstablishmentVideo = consultationMode === "video-only" && availableModes.video === true;
-//         const isNewEstablishmentVideo = showVideo === true && availableModes.includes('video') === true || Consultation_type === 'video';
-        console.log("isNewEstablishmentVideo: ", isNewEstablishmentVideo);
+        // Derive video flag — supports both Angular payload (consultationMode + availableModes)
+        // and Flutter payload (showVideo / Consultation_type)
+        const isNewEstablishmentVideo =
+            (consultationMode === "video-only" && availableModes?.video === true) ||
+            showVideo === true ||
+            Consultation_type === 'video-only' ||
+            Consultation_type === 'video';
+        console.log("isNewEstablishmentVideo: ", isNewEstablishmentVideo);       
         
         if (isNewEstablishmentVideo) {
             const existingVideoConsultations = existingTimings.filter((t: any) => 

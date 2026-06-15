@@ -10,6 +10,7 @@ import ConversationModel from "../models/Conversation";
 import NotificationModel from "../models/Notification";
 import UserModel from "../models/User";
 import constants from "../utils/constant";
+import { sendByUserQuery } from "../services/fcmService";
 
 const HOUR_MS = 60 * 60 * 1000;
 const LOOKAHEAD_MS = 24 * HOUR_MS; // fire when expiry is within the next 24h
@@ -66,6 +67,12 @@ async function runOnce(): Promise<void> {
         eventType: constants.NOTIFICATION_TYPE.CHAT_WINDOW_EXPIRING_SOON,
         eventId: convo._id,
       });
+
+      // Send push notification to patient device
+      sendByUserQuery(
+        { title: "Chat window ending soon", body },
+        { userIds: [String(patient.userId)] }
+      ).catch((e) => console.error("[FCM] chatExpiryNotifier push failed:", e?.message));
 
       await ConversationModel.updateOne(
         { _id: convo._id },

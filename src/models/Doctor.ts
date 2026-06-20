@@ -50,6 +50,20 @@ export interface IConsultationDetails {
   isInClinic?: boolean;
 }
 
+// ── Onboarding progress (durable, backend source-of-truth) ───────────────────
+export interface IOnboardingProgress {
+  medicalVerificationComplete: boolean;
+  establishmentComplete: boolean;
+  servicesComplete: boolean;
+  procedureComplete: boolean;
+  /** true when the doctor explicitly skipped the procedure step */
+  procedureSkipped: boolean;
+  profileComplete: boolean;
+  kycComplete: boolean;
+  /** Permanent latch — set once when ALL steps are done; never cleared. */
+  completedAt: Date | null;
+}
+
 export interface IDoctor extends Document {
   _id: mongoose.Types.ObjectId;
   userId: mongoose.Types.ObjectId;
@@ -88,6 +102,7 @@ export interface IDoctor extends Document {
   profileSlug?: string;
   consultationType?: string;
   consultationDetails?: IConsultationDetails;
+  onboardingProgress?: IOnboardingProgress;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -142,6 +157,17 @@ const ConsultationDetailsSchema = new Schema<IConsultationDetails>({
   isInClinic: { type: Boolean },
 }, { _id: false });
 
+const OnboardingProgressSchema = new Schema<IOnboardingProgress>({
+  medicalVerificationComplete: { type: Boolean, default: false },
+  establishmentComplete:       { type: Boolean, default: false },
+  servicesComplete:            { type: Boolean, default: false },
+  procedureComplete:           { type: Boolean, default: false },
+  procedureSkipped:            { type: Boolean, default: false },
+  profileComplete:             { type: Boolean, default: false },
+  kycComplete:                 { type: Boolean, default: false },
+  completedAt:                 { type: Date, default: null },
+}, { _id: false });
+
 const DoctorSchema = new Schema<IDoctor>({
   userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   specialization: [{ type: Schema.Types.ObjectId, ref: 'Specialization' }],
@@ -186,6 +212,7 @@ const DoctorSchema = new Schema<IDoctor>({
     enum: ['VIDEO', 'IN_CLINIC'],
   },
   consultationDetails: ConsultationDetailsSchema,
+  onboardingProgress: { type: OnboardingProgressSchema, default: () => ({}) },
 }, { timestamps: true, versionKey: false });
 
 export const Doctor = mongoose.model<IDoctor>('Doctor', DoctorSchema);

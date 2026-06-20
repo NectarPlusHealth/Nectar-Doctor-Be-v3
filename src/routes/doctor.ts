@@ -108,6 +108,18 @@ router.get(
   doctorController.getAnalytics
 );
 
+router.get(
+  "/onboarding-status",
+  verifyAuthToken,
+  doctorController.getOnboardingStatus
+);
+
+router.put(
+  "/onboarding-status",
+  verifyAuthToken,
+  doctorController.updateOnboardingStatus
+);
+
 router.post(
   "/doctor-delete-establishment2",
   verifyAuthToken,

@@ -23,7 +23,7 @@
 import { Request, Response } from "express";
 import { ObjectId } from "mongodb";
 import { Types } from "mongoose";
-import Doctor from "../models/Doctor";
+import Doctor, { IDoctor } from "../models/Doctor";
 import doctorService from "../services/doctorService";
 import response from "../utils/response";
 import httpStatus from "http-status";
@@ -3009,6 +3009,351 @@ const deleteVisitingEstablishment = async (req: Request, res: Response): Promise
   }
 };
 
+// ────────────────────────────────────────────────────────────────────────────────
+// Onboarding Status Management
+// ────────────────────────────────────────────────────────────────────────────────
+
+/** Ordered onboarding step names (single source of truth) */
+const ONBOARDING_STEPS = [
+  'medicalVerification',
+  'establishment',
+  'services',
+  'procedure',
+  'profile',
+  'kyc',
+] as const;
+type OnboardingStepName = typeof ONBOARDING_STEPS[number];
+
+interface OnboardingStatusResult {
+  medicalVerificationComplete: boolean;
+  establishmentComplete: boolean;
+  servicesComplete: boolean;
+  procedureComplete: boolean;
+  procedureSkipped: boolean;
+  profileComplete: boolean;
+  kycComplete: boolean;
+  onboardingComplete: boolean;
+  currentStep: OnboardingStepName | null;
+  completedAt: string | null;
+}
+
+/**
+ * Compute live + stored onboarding status for a doctor.
+ * Combines durable progress flags with actual DB data to handle legacy users.
+ */
+async function computeOnboardingStatus(
+  doctor: IDoctor,
+  userId: string,
+): Promise<OnboardingStatusResult> {
+  const prog = doctor.onboardingProgress ?? {} as any;
+
+  // ── Step 1: Medical Verification ────────────────────────────────────────────
+  const medicalFromData =
+    !!(doctor.medicalRegistration?.length &&
+       doctor.medicalRegistration[0].registrationNumber &&
+       doctor.identityProof?.length &&
+       doctor.medicalProof?.length);
+  const medicalVerificationComplete = prog.medicalVerificationComplete === true || medicalFromData;
+
+  // ── Step 2: Establishment ────────────────────────────────────────────────────
+  const estCount = await EstablishmentTiming.countDocuments({
+    doctorId: doctor._id,
+    isDeleted: false,
+  });
+  const establishmentFromData = estCount > 0;
+  const establishmentComplete = prog.establishmentComplete === true || establishmentFromData;
+
+  // ── Step 3: Services ────────────────────────────────────────────────────────
+  const servicesFromData = !!(doctor.service?.length);
+  const servicesComplete = prog.servicesComplete === true || servicesFromData;
+
+  // ── Step 4: Procedure (optional) ────────────────────────────────────────────
+  const procedureSkipped = prog.procedureSkipped === true;
+  const procedureFromData = !!(doctor.procedure?.length);
+  const procedureComplete = prog.procedureComplete === true || procedureFromData || procedureSkipped;
+
+  // ── Step 5: Profile ─────────────────────────────────────────────────────────
+  const profileFromData =
+    !!(doctor.specialization?.length) ||
+    doctor.experience != null ||
+    doctor.about != null;
+  const profileComplete = prog.profileComplete === true || profileFromData;
+
+  // ── Step 6: KYC ─────────────────────────────────────────────────────────────
+  const KycModel = require("../models/Kyc").default;
+  const kyc = await KycModel.findOne({ userId: new Types.ObjectId(userId) });
+  const kycFromData = kyc && ['submitted', 'verified', 'manual_review'].includes(kyc.kycStatus);
+  const kycComplete = prog.kycComplete === true || !!kycFromData;
+
+  // ── Overall completion ───────────────────────────────────────────────────────
+  const allDone =
+    medicalVerificationComplete &&
+    establishmentComplete &&
+    servicesComplete &&
+    procedureComplete &&
+    profileComplete &&
+    kycComplete;
+
+  // Determine completedAt — it's a permanent latch; only set once
+  let completedAt: Date | null = prog.completedAt ?? null;
+
+  // Persist inferred/new completion automatically (legacy migration + forward path)
+  const needsPersist =
+    medicalVerificationComplete !== (prog.medicalVerificationComplete === true) ||
+    establishmentComplete !== (prog.establishmentComplete === true) ||
+    servicesComplete !== (prog.servicesComplete === true) ||
+    procedureComplete !== (prog.procedureComplete === true) ||
+    profileComplete !== (prog.profileComplete === true) ||
+    kycComplete !== (prog.kycComplete === true) ||
+    (allDone && completedAt == null);
+
+  if (needsPersist) {
+    if (allDone && completedAt == null) {
+      completedAt = new Date();
+    }
+    await Doctor.updateOne(
+      { _id: doctor._id },
+      {
+        $set: {
+          'onboardingProgress.medicalVerificationComplete': medicalVerificationComplete,
+          'onboardingProgress.establishmentComplete': establishmentComplete,
+          'onboardingProgress.servicesComplete': servicesComplete,
+          'onboardingProgress.procedureComplete': procedureComplete,
+          'onboardingProgress.procedureSkipped': procedureSkipped,
+          'onboardingProgress.profileComplete': profileComplete,
+          'onboardingProgress.kycComplete': kycComplete,
+          ...(allDone && completedAt ? { 'onboardingProgress.completedAt': completedAt } : {}),
+        },
+      },
+    );
+  }
+
+  // ── Current step ────────────────────────────────────────────────────────────
+  let currentStep: OnboardingStepName | null = null;
+  if (!medicalVerificationComplete) currentStep = 'medicalVerification';
+  else if (!establishmentComplete) currentStep = 'establishment';
+  else if (!servicesComplete) currentStep = 'services';
+  else if (!procedureComplete) currentStep = 'procedure';
+  else if (!profileComplete) currentStep = 'profile';
+  else if (!kycComplete) currentStep = 'kyc';
+
+  return {
+    medicalVerificationComplete,
+    establishmentComplete,
+    servicesComplete,
+    procedureComplete,
+    procedureSkipped,
+    profileComplete,
+    kycComplete,
+    onboardingComplete: allDone,
+    currentStep,
+    completedAt: completedAt ? completedAt.toISOString() : null,
+  };
+}
+
+/**
+ * GET /doctor/onboarding-status
+ * Returns the onboarding completion status for the doctor
+ */
+const getOnboardingStatus = async (req: CustomRequest, res: Response) => {
+  try {
+    const userId = req.data?.userId;
+    if (!userId) {
+      return response.error({ msgCode: "UNAUTHORIZED" }, res, httpStatus.UNAUTHORIZED);
+    }
+
+    const doctor = await Doctor.findOne({ userId: new Types.ObjectId(userId) });
+    if (!doctor) {
+      return response.error({ msgCode: "DOCTOR_NOT_FOUND" }, res, httpStatus.NOT_FOUND);
+    }
+
+    const status = await computeOnboardingStatus(doctor, String(userId));
+    return response.success({ msgCode: "SUCCESS", result: status }, res, httpStatus.OK);
+  } catch (error) {
+    console.error("getOnboardingStatus error:", error);
+    return response.error({ msgCode: "INTERNAL_SERVER_ERROR" }, res, httpStatus.INTERNAL_SERVER_ERROR);
+  }
+};
+
+/**
+ * PUT /doctor/onboarding-status
+ * Marks a specific onboarding step as complete.
+ * Validates actual data, persists the flag, and returns refreshed status.
+ */
+const updateOnboardingStatus = async (req: CustomRequest, res: Response) => {
+  try {
+    const userId = req.data?.userId;
+    if (!userId) {
+      return response.error({ msgCode: "UNAUTHORIZED" }, res, httpStatus.UNAUTHORIZED);
+    }
+
+    const { step, completed, skipped } = req.body ?? {};
+
+    // Validate step name
+    if (!step || !ONBOARDING_STEPS.includes(step as OnboardingStepName)) {
+      return response.error(
+        { msgCode: "BAD_REQUEST", message: `Invalid step. Must be one of: ${ONBOARDING_STEPS.join(', ')}` },
+        res,
+        httpStatus.BAD_REQUEST,
+      );
+    }
+    if (completed !== true) {
+      return response.error(
+        { msgCode: "BAD_REQUEST", message: "completed must be true" },
+        res,
+        httpStatus.BAD_REQUEST,
+      );
+    }
+
+    const doctor = await Doctor.findOne({ userId: new Types.ObjectId(userId) });
+    if (!doctor) {
+      return response.error({ msgCode: "DOCTOR_NOT_FOUND" }, res, httpStatus.NOT_FOUND);
+    }
+
+    const prog = doctor.onboardingProgress ?? {} as any;
+    const stepName = step as OnboardingStepName;
+
+    // ── Validate prerequisite + actual data for each step ───────────────────
+    if (stepName === 'medicalVerification') {
+      const ok =
+        !!(doctor.medicalRegistration?.length &&
+           doctor.medicalRegistration[0].registrationNumber &&
+           doctor.identityProof?.length &&
+           doctor.medicalProof?.length);
+      if (!ok) {
+        return response.error(
+          { msgCode: "BAD_REQUEST", message: "Medical registration and proofs must be saved first." },
+          res, httpStatus.BAD_REQUEST,
+        );
+      }
+      await Doctor.updateOne(
+        { _id: doctor._id },
+        { $set: { 'onboardingProgress.medicalVerificationComplete': true } },
+      );
+
+    } else if (stepName === 'establishment') {
+      if (prog.medicalVerificationComplete !== true) {
+        return response.error(
+          { msgCode: "BAD_REQUEST", message: "Complete medical verification first." },
+          res, httpStatus.BAD_REQUEST,
+        );
+      }
+      const estCount = await EstablishmentTiming.countDocuments({ doctorId: doctor._id, isDeleted: false });
+      if (estCount === 0) {
+        return response.error(
+          { msgCode: "BAD_REQUEST", message: "Add at least one establishment first." },
+          res, httpStatus.BAD_REQUEST,
+        );
+      }
+      await Doctor.updateOne(
+        { _id: doctor._id },
+        { $set: { 'onboardingProgress.establishmentComplete': true } },
+      );
+
+    } else if (stepName === 'services') {
+      if (prog.establishmentComplete !== true) {
+        return response.error(
+          { msgCode: "BAD_REQUEST", message: "Complete establishment step first." },
+          res, httpStatus.BAD_REQUEST,
+        );
+      }
+      if (!doctor.service?.length) {
+        return response.error(
+          { msgCode: "BAD_REQUEST", message: "Save at least one service first." },
+          res, httpStatus.BAD_REQUEST,
+        );
+      }
+      await Doctor.updateOne(
+        { _id: doctor._id },
+        { $set: { 'onboardingProgress.servicesComplete': true } },
+      );
+
+    } else if (stepName === 'procedure') {
+      if (prog.servicesComplete !== true) {
+        return response.error(
+          { msgCode: "BAD_REQUEST", message: "Complete services step first." },
+          res, httpStatus.BAD_REQUEST,
+        );
+      }
+      // Procedure is optional — allow either saved procedures or explicit skip
+      const hasProcs = !!(doctor.procedure?.length);
+      const isSkipping = skipped === true;
+      if (!hasProcs && !isSkipping) {
+        return response.error(
+          { msgCode: "BAD_REQUEST", message: "Either select procedures or pass skipped:true." },
+          res, httpStatus.BAD_REQUEST,
+        );
+      }
+      await Doctor.updateOne(
+        { _id: doctor._id },
+        {
+          $set: {
+            'onboardingProgress.procedureComplete': true,
+            'onboardingProgress.procedureSkipped': isSkipping,
+          },
+        },
+      );
+
+    } else if (stepName === 'profile') {
+      if (prog.procedureComplete !== true) {
+        return response.error(
+          { msgCode: "BAD_REQUEST", message: "Complete procedure step first." },
+          res, httpStatus.BAD_REQUEST,
+        );
+      }
+      const hasProfile =
+        !!(doctor.specialization?.length) ||
+        doctor.experience != null ||
+        doctor.about != null;
+      if (!hasProfile) {
+        return response.error(
+          { msgCode: "BAD_REQUEST", message: "Complete your basic profile (specialization or experience) first." },
+          res, httpStatus.BAD_REQUEST,
+        );
+      }
+      await Doctor.updateOne(
+        { _id: doctor._id },
+        { $set: { 'onboardingProgress.profileComplete': true } },
+      );
+
+    } else if (stepName === 'kyc') {
+      if (prog.profileComplete !== true) {
+        return response.error(
+          { msgCode: "BAD_REQUEST", message: "Complete profile step first." },
+          res, httpStatus.BAD_REQUEST,
+        );
+      }
+      const KycModel = require("../models/Kyc").default;
+      const kyc = await KycModel.findOne({ userId: new Types.ObjectId(userId) });
+      const kycSubmitted = kyc && ['submitted', 'verified', 'manual_review'].includes(kyc.kycStatus);
+      if (!kycSubmitted) {
+        return response.error(
+          { msgCode: "BAD_REQUEST", message: "Submit KYC first." },
+          res, httpStatus.BAD_REQUEST,
+        );
+      }
+      await Doctor.updateOne(
+        { _id: doctor._id },
+        { $set: { 'onboardingProgress.kycComplete': true } },
+      );
+    }
+
+    // Re-fetch updated doctor and return fresh status
+    const updatedDoctor = await Doctor.findOne({ userId: new Types.ObjectId(userId) });
+    if (!updatedDoctor) {
+      return response.error({ msgCode: "DOCTOR_NOT_FOUND" }, res, httpStatus.NOT_FOUND);
+    }
+
+    // Check if all steps are now complete, and persist completedAt if needed
+    const freshStatus = await computeOnboardingStatus(updatedDoctor, String(userId));
+
+    return response.success({ msgCode: "SUCCESS", result: freshStatus }, res, httpStatus.OK);
+  } catch (error) {
+    console.error("updateOnboardingStatus error:", error);
+    return response.error({ msgCode: "INTERNAL_SERVER_ERROR" }, res, httpStatus.INTERNAL_SERVER_ERROR);
+  }
+};
+
 export default {
-  getDoctorPatientList,doctorAppointmentList,allVideo,doctorUpdateProfile,doctorAddEstablishment,getCalender,getDoctorProfile,doctorEstablishmentList,getDashboardSummary,getDashboardProfile,getAnalytics,editEstablishment,rescheduleAppointment,deleteOwnEstablishment,deleteVisitingEstablishment
+  getDoctorPatientList,doctorAppointmentList,allVideo,doctorUpdateProfile,doctorAddEstablishment,getCalender,getDoctorProfile,doctorEstablishmentList,getDashboardSummary,getDashboardProfile,getAnalytics,editEstablishment,rescheduleAppointment,deleteOwnEstablishment,deleteVisitingEstablishment,getOnboardingStatus,updateOnboardingStatus
 };

@@ -1611,7 +1611,7 @@ export const doctorAddEstablishment = async (req: Request, res: Response): Promi
             mon, tue, wed, thu, fri, sat, sun,
             showVideo, // 💡 Flag indicating video consultation
             Consultation_type, // 💡 Used by frontend to determine type in absence of showVideo/showInClinic
-            ownEstablishmentExist, establishmentProof,availableModes,consultationMode,isCustomEstablishment
+            ownEstablishmentExist, establishmentProof,availableModes,consultationMode,isCustomEstablishment, proofType
         } = req.body;
 
         // --- Find Doctor and Establishment ---
@@ -1694,9 +1694,35 @@ export const doctorAddEstablishment = async (req: Request, res: Response): Promi
                     httpStatus.CONFLICT
                 );
                 return;
+
+        // -------------------------
+        // 2.5 Proof type validation
+        // -------------------------
+        const finalConsultationType = isNewEstablishmentVideo ? 'video' : Consultation_type || 'own';
+        const PROOF_TYPES_BY_OWNERSHIP: Record<string, string[]> = {
+            'own': ['Clinic Registration Certificate', 'Electricity Bill', 'Other'],
+            'visit': ['Offer Letter', 'Visiting Card', 'Salary Slip', 'Prescription Letter', 'Hospital/Clinic ID Card', 'Other'],
+            'video': ['Other']
+        };
+        
+        const validProofs = PROOF_TYPES_BY_OWNERSHIP[finalConsultationType] || [];
+        // ? FIX: Treat missing proofType as 'Other' for video-only.
+        const effectiveProofType = proofType ?? (isNewEstablishmentVideo ? 'Other' : undefined);
+        if (!validProofs.includes(String(effectiveProofType))) {
+            response.error(
+                { 
+                    msgCode: "INVALID_PROOF_TYPE",
+                    message: `Invalid proof type "1696{proofType}" for 1696{finalConsultationType} establishment. Valid: 1696{validProofs.join(', ')}`
+                },
+                res,
+                httpStatus.BAD_REQUEST
+            );
+            return;
+        }
             }
         }
 
+        // -------------------------
         // -------------------------
         // 3. Build a fast lookup of existing slots by day (Only for in-clinic overlap check)
         // -------------------------
@@ -1804,8 +1830,8 @@ export const doctorAddEstablishment = async (req: Request, res: Response): Promi
         // =========================
 
         const userCondition = { _id: new Types.ObjectId(doctorUserId) };
-        // finalConsultationType will be 'video' only if the frontend explicitly sets Consultation_type='video'
-        const finalConsultationType = isNewEstablishmentVideo ? 'video' : Consultation_type || 'own';
+        const finalConsultationType = isNewEstablishmentVideo ? 'video' : Consultation_type || 'own';
+
 
         // ======= CASE: isOwner === 1 (doctor creates/owns a hospital) =======
         if (Number(isOwner) === 1) {
@@ -1823,7 +1849,9 @@ export const doctorAddEstablishment = async (req: Request, res: Response): Promi
             const dataHospital: any = {
                 userId: new Types.ObjectId(doctorUserId),
                 profilePic, address, location, isLocationShared,
-                totalDoctor: 1, steps: 4, establishmentProof,isVerified:Consultation_type==="video"?2:1,
+                totalDoctor: 1, steps: 4, establishmentProof,
+                // ?? FIX: Auto-approve video-only establishments using finalConsultationType
+                isVerified: finalConsultationType === 'video' ? 2 : 1,
             };
             if (hospitalTypeId) {
                 dataHospital.hospitalType = hospitalTypeId;
@@ -1941,7 +1969,8 @@ export const doctorAddEstablishment = async (req: Request, res: Response): Promi
                 hospitalId: (hospitalData as any)._id, 
                 // 🎯 FIX: Use finalConsultationType to decide if name must be overridden
                 name: finalConsultationType === 'video' ? "Video Consultation Only" : name,
-                hospitalTypeId, address, location, isLocationShared,
+                address, location, isLocationShared,
+                ...(hospitalTypeId && hospitalTypeId.trim() ? { hospitalTypeId } : {}),
                 // isVerified:Consultation_type==="video"?2:1,
                 isVerified: isCustomEstablishment== true
                 ? 1
@@ -2201,6 +2230,8 @@ export const doctorAddEstablishment = async (req: Request, res: Response): Promi
 //         // =========================
 
 //         const userCondition = { _id: new Types.ObjectId(doctorUserId) };
+//         const finalConsultationType = isNewEstablishmentVideo ? 'video' : Consultation_type || 'own';
+
 //         const finalConsultationType = isNewEstablishmentVideo ? 'video' : Consultation_type || 'own';
 
 //         // ======= CASE: isOwner === 1 (doctor creates/owns a hospital) =======
@@ -2528,6 +2559,7 @@ export const doctorEstablishmentList = async (req: CustomRequest, res: Response)
 
     const condition = {
       doctorId: new Types.ObjectId(findDoctor._id),
+      isDeleted: false,  // 🎯 FIX: Don't show deleted establishments
       // isVerified: constants.PROFILE_STATUS.APPROVE,
     };
 
@@ -3354,6 +3386,12 @@ const updateOnboardingStatus = async (req: CustomRequest, res: Response) => {
   }
 };
 
+
 export default {
   getDoctorPatientList,doctorAppointmentList,allVideo,doctorUpdateProfile,doctorAddEstablishment,getCalender,getDoctorProfile,doctorEstablishmentList,getDashboardSummary,getDashboardProfile,getAnalytics,editEstablishment,rescheduleAppointment,deleteOwnEstablishment,deleteVisitingEstablishment,getOnboardingStatus,updateOnboardingStatus
 };
+
+
+
+
+

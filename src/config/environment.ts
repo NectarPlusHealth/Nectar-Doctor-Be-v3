@@ -54,6 +54,29 @@ export const config = {
       process.env.GOOGLE_OAUTH_FRONTEND_RETURN_URL ||
       'http://localhost:4200/settings?googleConnected=1',
   },
+
+  /**
+   * Video-consultation provider. When set to 'twilio', getVideoLink returns
+   * a Twilio Access Token + room name so the mobile / web clients can join
+   * an in-app Twilio Video room. Any other value falls back to Google Meet.
+   */
+  videoProvider: (process.env.VIDEO_PROVIDER || 'google_meet').toLowerCase(),
+
+  /**
+   * Twilio Video credentials.
+   * Get them at https://console.twilio.com/us1/develop/video/manage/api-keys.
+   * Both the doctor backend and patient backend MUST use the same account
+   * SID; API-key/secret only need to be valid for that same account.
+   */
+  twilio: {
+    accountSid: process.env.TWILIO_ACCOUNT_SID || '',
+    apiKeySid: process.env.TWILIO_API_KEY || '',
+    apiKeySecret: process.env.TWILIO_API_SECRET || '',
+    /** Access-token lifetime in seconds. Twilio hard-caps this at 24 hours. */
+    tokenTtlSec: toNumber(process.env.TWILIO_TOKEN_TTL_SEC, 60 * 60 * 2),
+    /** Room-name prefix — must be identical to the Patient Backend. */
+    roomPrefix: process.env.TWILIO_ROOM_PREFIX || 'nectar-consult',
+  },
 };
 
 // Helpful early validation

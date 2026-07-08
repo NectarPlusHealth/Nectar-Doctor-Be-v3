@@ -8,6 +8,7 @@ import response from "../utils/response";
 import constants from "../utils/constant";
 import { config } from "../config/environment";
 import googleMeet from "../services/googleMeetService";
+import twilioVideo, { buildRoomName } from "../services/twilioVideoService";
 import DoctorGoogleAccountModel from "../models/DoctorGoogleAccount";
 import AppointmentModel from "../models/Appointment";
 import DoctorModel from "../models/Doctor";
@@ -314,6 +315,61 @@ const getVideoLink = async (req: CustomRequest, res: Response): Promise<void> =>
       );
     }
 
+    // ── Twilio Video branch ────────────────────────────────────────────────
+    // When VIDEO_PROVIDER=twilio, we mint an Access Token bound to a
+    // deterministic room name (nectar-consult-<appointmentId>). Twilio auto-
+    // creates the room the first time either participant connects.
+    if (config.videoProvider === "twilio") {
+      let token: string;
+      const roomName = buildRoomName(apptId);
+      const identity = `doctor-${doctorUserId}`;
+      try {
+        token = twilioVideo.generateTwilioVideoToken({
+          roomName,
+          identity,
+        });
+      } catch (err: any) {
+        console.error("video.getVideoLink Twilio token error:", err);
+        return void response.error(
+          {
+            message:
+              err?.message || "Could not generate Twilio video token.",
+          },
+          res,
+          500
+        );
+      }
+
+      // Record provider + first-join time on the appointment so both sides
+      // stay in sync and the UI can show "In progress".
+      if (!appt.videoMeetingProvider || appt.videoMeetingProvider !== "twilio") {
+        appt.videoMeetingProvider = "twilio";
+      }
+      if (!appt.videoConsultationStartedAt) {
+        appt.videoConsultationStartedAt = new Date();
+      }
+      await appt.save();
+
+      return void response.success(
+        {
+          message: "Video link",
+          result: {
+            appointmentId: String(appt._id),
+            provider: "twilio",
+            roomName,
+            token,
+            identity,
+            role: "doctor",
+            scheduledAt: start.toISOString(),
+            startedAt: appt.videoConsultationStartedAt,
+            endedAt: appt.videoConsultationEndedAt || null,
+          },
+        },
+        res
+      );
+    }
+
+    // ── Google Meet branch (default fallback) ──────────────────────────────
     // Create the Meet link if missing — delegate to google-meet-scheduler.
     if (!appt.videoMeetingUrl) {
       if (!isDoctor) {

@@ -9,6 +9,10 @@ const fileFilter = (req: Request, file: Express.Multer.File, cb: multer.FileFilt
     "image/jpeg",
     "application/pdf",
     "image/webp",
+    "image/gif",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "text/plain",
   ];
   if (allowedTypes.includes(file.mimetype)) {
     cb(null, true);

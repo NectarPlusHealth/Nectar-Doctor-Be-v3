@@ -3,7 +3,9 @@ import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { v4 as uuid } from "uuid";
 
 export const imageUpload = async (file: Express.Multer.File, folder = "uploads") => {
-  const key = `${uuid()}-${file.originalname}`;
+  const safeFolder = folder.replace(/[^a-zA-Z0-9/_-]/g, "");
+  const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const key = `${safeFolder}/${uuid()}-${safeName}`;
 
   const uploadParams = {
     Bucket: bucket,
